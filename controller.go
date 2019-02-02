@@ -6,6 +6,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
@@ -18,6 +20,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
 
+	robv1alpha1 "github.com/robel-yemane/rob-controller/pkg/apis/robcontroller/v1alpha1"
 	clientset "github.com/robel-yemane/rob-controller/pkg/client/clientset/versioned"
 	robscheme "github.com/robel-yemane/rob-controller/pkg/client/clientset/versioned/scheme"
 	informers "github.com/robel-yemane/rob-controller/pkg/client/informers/externalversions/robcontroller/v1alpha1"
@@ -215,4 +218,152 @@ func (c *Controller) processNextWorkItem() bool {
 	}
 	return true
 
+}
+
+// syncHandler compares the actual state with the desired, and attempts to
+// converge the two. It then updates the Status block of the Rob resource
+// with the current status of the resource.
+func (c *Controller) syncHandler(key string) error {
+	// Convert the namespace/name string into a distinct namespace and name
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		utilruntime.HandleError(fmt.Errorf("invalid resource key: %s", key))
+		return nil
+	}
+
+	// Get the Rob resource with this namespace/name
+	rob, err := c.robsLister.Robs(namespace).Get(name)
+	if err != nil {
+		// The Rob resource may no longer exist, in which case we stop
+		// processing.
+		if errors.IsNotFound(err) {
+			utilruntime.HandleError(fmt.Errorf("rob '%s' in work queue no longer exists", key))
+			return nil
+		}
+		return err
+	}
+
+	deploymentName := rob.Spec.DeploymentName
+	if deploymentName == "" {
+		// We choose to absorb the error here as the worker would requeue the
+		// resource otherwise. Instead, the next time the resource is updated
+		// the resource will be queued again
+		utilruntime.HandleError(fmt.Errorf("%s: deployment name must be specified", key))
+		return nil
+	}
+
+	// Get the deployment with the name specified in Rob.Spec
+	deployment, err := c.deploymentsLister.Deployments(rob.Namespace).Get(deploymentName)
+	// if the resource doesn't exist, we'll create it
+	if errors.IsNotFound(err) {
+		deployment, err = c.kubeclientset.AppsV1().Deployments(rob.Namespace).Create(newDeployment(rob))
+
+	}
+
+	// If an error occurs during Get/Create, we'll requeue the item so we can
+	// attempt processing again later. This could have been caused by a
+	// temporary network failure, or any other transient reason.
+	if err != nil {
+		return err
+	}
+
+	// if the Deployment is not controller by this Rob resource, we should log
+	// a warning to the even recorder and ret
+	if !metav1.IsControlledBy(deployment, rob) {
+		msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
+		c.recorder.Event(rob, corev1.EventTypeWarning, ErrResourceExists, msg)
+		return fmt.Errorf(msg)
+	}
+
+	// If this number of the replicas on the Rob resource is specified, and the
+	// number does not equal the current desired on the Deployment, we
+	// should update teh Deployment resource.
+	if rob.Spec.Replicas != nil && *rob.spec.Replicas != *deployment.Spec.Replicas {
+		klog.V(4).Info("Rob %s replicas: %d, deployment replicas: %d", name, *rob.Spec.Replicas, *deployment.Spec.Replicas)
+		deployment, err = c.kubeclientset.AppsV1().Deployments(rob.Namespace).Update(newDeployment(rob))
+	}
+
+	// if an error occurs during Update, we'll requeue the item so we can
+	// attempt processing again later. This could have been caused by a
+	// temporary network failure, or any other transient reason
+	if err != nil {
+		return err
+	}
+
+	// Finally, we update the status block of the Rob resource to reflect the
+	// the current state of the world
+	err = c.updateRobStatus(rob, deployment)
+	if err != nil {
+		return err
+	}
+	c.recorder.Event(rob, corev1.EventTypeNormal, SuccessSynced, MessageResourceSynced)
+	return nil
+
+}
+
+func (c *Controller) updateRobStatus(rob *robv1alpha1.Rob, deployment *appsv1.Deployment) error {
+	// NEVER modify objects from the store. It's a read-only, local cache.
+	// You can DeepCopy() to make a deep copy of original object and modify this copy
+	// or create a copy manually for better performance
+	robCopy := rob.DeepCopy()
+	robCopy.Status.AvailableReplicas = deployment.Status.AvailableReplicas
+	// If the CustomResourceSubresources feature gate is not enabled,
+	// we must use Update instead of UpdateStatus to update the Status block of the Rob resource.
+	// UpdateStatus will not allow changes to the Spec of the resource,
+	// which is ideal for ensuring nothing other than resource status has been updated.
+	_, err := c.robclientset.RobcontrollerV1alpha1().Robs(rob.Namespace).Update(robCopy)
+	return err
+}
+
+// enqueueRob takes a Rob resource and converts it into a namespace/name
+// string with is then put onto the work queue. This method should *not* be
+// passed resources of any type other than Rob.
+
+func (c *Controller) enqueueRob(obj interface{}) {
+	var key string
+	var err error
+	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
+		utilruntime.HandleError(err)
+		return
+	}
+	c.workqueue.AddRateLimited(key)
+}
+
+// handleObject will take any resource implementing metav1.Object and attempt
+// to find the Rob resource that 'owns' it. It does this by looking at the
+// objects metadata.ownerReferences field for an appropriate OwnerReference.
+// It then enqueues that Rob resource to be processed. If the object does not
+// have an appropriate OwnerReference, it will simply be skipped.
+func (c *Controller) handleObject(obj interface{}) {
+	var object metav1.Object
+	var ok bool
+	if object, ok = obj.(metav1.Object); !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			utilruntime.HandleError(fmt.Errorf("error decoding object, invalid type"))
+			return
+		}
+		object, ok = tombstone.Obj.(metav1.Object)
+		if !ok {
+			utilruntime.HandleError(fmt.Errorf("error decoding object tombstone, invalid type"))
+			return
+		}
+		klog.V(4).Info("Recovered deleted object '%s' from tombstone", object.GetName())
+	}
+	klog.V(4).Infof("Processing object: %s", object.GetName())
+	if onwerRef := metav1.GetControllerOf(object); onwerRef != nil {
+		// if this object is not owned by a Rob, we should not do anything more
+		// with it.
+		if onwerRef.Kind != "Rob" {
+			return
+		}
+
+		rob, err := c.robsLister.Robs(object.GetNamespace()).Get(onwerRef.Name)
+		if err != nil {
+			klog.V(4).Infof("ignoring orphaned object '%s' of rob '%s'", object.GetSelfLink, onwerRef.Name)
+			return
+		}
+		c.enqueueRob(rob)
+		return
+	}
 }
