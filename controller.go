@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	appsinformers "k8s.io/client-go/informers/apps/v1"
@@ -277,8 +278,8 @@ func (c *Controller) syncHandler(key string) error {
 
 	// If this number of the replicas on the Rob resource is specified, and the
 	// number does not equal the current desired on the Deployment, we
-	// should update teh Deployment resource.
-	if rob.Spec.Replicas != nil && *rob.spec.Replicas != *deployment.Spec.Replicas {
+	// should update the Deployment resource.
+	if rob.Spec.Replicas != nil && *rob.Spec.Replicas != *deployment.Spec.Replicas {
 		klog.V(4).Info("Rob %s replicas: %d, deployment replicas: %d", name, *rob.Spec.Replicas, *deployment.Spec.Replicas)
 		deployment, err = c.kubeclientset.AppsV1().Deployments(rob.Namespace).Update(newDeployment(rob))
 	}
@@ -365,5 +366,47 @@ func (c *Controller) handleObject(obj interface{}) {
 		}
 		c.enqueueRob(rob)
 		return
+	}
+}
+
+// newDeployment creates a new Deployment for a Rob resource. It also sets
+// the appropriate OwnerReferences on the resource so handleObject can discover
+// the Rob resource that 'owns' it.
+func newDeployment(rob *robv1alpha1.Rob) *appsv1.Deployment {
+	labels := map[string]string{
+		"app":        "nginx",
+		"controller": rob.Name,
+	}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rob.Spec.DeploymentName,
+			Namespace: rob.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rob, schema.GroupVersionKind{
+					Group:   robv1alpha1.SchemeGroupVersion.Group,
+					Version: robv1alpha1.SchemeGroupVersion.Version,
+					Kind:    "Rob",
+				}),
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: rob.Spec.Replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "nginx",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+		},
 	}
 }
