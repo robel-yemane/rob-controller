@@ -97,7 +97,7 @@ func NewController(
 		recorder:          recorder,
 	}
 
-	// TH: ResourceEventHandler: these are the callback functions which will be called by the Informer when it wants to deliver
+	// TH => ResourceEventHandler: these are the callback functions which will be called by the Informer when it wants to deliver
 	// an object to your (custom) controller. The typical pattern to write these functions is to obtain the dispatched object's
 	// key and enqueue that key in a work queue for further processing.
 	// this is done in enqueueRob.
