@@ -31,7 +31,7 @@ import (
 const controllerAgentName = "rob-controller"
 
 const (
-	//SuccessSynced is used as part of teh Event 'reason' when a Rob is synced
+	//SuccessSynced is used as part of the Event 'reason' when a Rob is synced
 	SuccessSynced = "Synced"
 	//ErrResourceExists is used as part of the Event 'reason' when a Rob fails
 	// to sync due to a Deployment of the same name already existing.
@@ -61,7 +61,7 @@ type Controller struct {
 	// workqueue is a rate limited work queue. This is used to queue work to be
 	// processed instead of performing it as soon as a change happens. This
 	// means we can ensure we only process a fixed amount of resources at a
-	// time, and maes it easy to ensure we are never processing the same item
+	// time, and makes it easy to ensure we are never processing the same item
 	// simultaneously in two different workers.
 	workqueue workqueue.RateLimitingInterface
 	// recorder is an event recorder for recording Event resources to the
@@ -80,7 +80,7 @@ func NewController(
 	// Add rob-controller types to the default Kubernetes Scheme so Events can be
 	// logged for rob-controller types.
 	utilruntime.Must(robscheme.AddToScheme(scheme.Scheme))
-	klog.V(4).Info("Creating  even broadcaster")
+	klog.V(4).Info("Creating  event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(klog.Infof)
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: kubeclientset.CoreV1().Events("")})
@@ -97,6 +97,10 @@ func NewController(
 		recorder:          recorder,
 	}
 
+	// TH: ResourceEventHandler: these are the callback functions which will be called by the Informer when it wants to deliver
+	// an object to your (custom) controller. The typical pattern to write these functions is to obtain the dispatched object's
+	// key and enqueue that key in a work queue for further processing.
+	// this is done in enqueueRob.
 	klog.Info("Setting up event handlers")
 	// Set up an event handler for when Rob resources change
 	robInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
