@@ -204,7 +204,8 @@ func (c *Controller) processNextWorkItem() bool {
 			return nil
 		}
 		// Run the syncHandler, passing it the namespace/name string of the
-		// Rob resource to be synced.
+		// Rob resource to be synced. (to compare and converge the actual state with the
+		// desired state)
 		if err := c.syncHandler(key); err != nil {
 			// Put the item back on the workqueue to handle any transient errors.
 			c.workqueue.AddRateLimited(key)
@@ -273,7 +274,7 @@ func (c *Controller) syncHandler(key string) error {
 	}
 
 	// if the Deployment is not controller by this Rob resource, we should log
-	// a warning to the even recorder and ret
+	// a warning to the event recorder and ret
 	if !metav1.IsControlledBy(deployment, rob) {
 		msg := fmt.Sprintf(MessageResourceExists, deployment.Name)
 		c.recorder.Event(rob, corev1.EventTypeWarning, ErrResourceExists, msg)
