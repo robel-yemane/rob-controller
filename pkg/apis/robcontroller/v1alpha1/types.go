@@ -29,7 +29,7 @@ type RobStatus struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// RobList is a list of Foo resources
+// RobList is a list of Rob resources
 type RobList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata"`
